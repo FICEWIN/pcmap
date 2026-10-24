@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="theme-color" content="#07131c">
+<meta name="description" content="خريطة تفاعلية لألعابة The Planet Crafter — دبابيس وملاحظات وقياس مسافات">
+<title>خريطة الكوكب — Planet Crafter</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="appwrap">
+  <header id="topbar">
+    <span id="brand">خريطة الكوكب</span>
+    <div id="tools">
+      <button class="tb" id="btnAdd" title="أضف دبوسا">دبوس</button>
+      <button class="tb" id="btnMeasure" title="قياس مسافة">قياس</button>
+      <button class="tb" id="btnCal" title="معايرة الإحداثيات">معايرة</button>
+      <button class="tb" id="btnUndo" title="حذف آخر دبوس">تراجع</button>
+      <button class="tb" id="btnList" title="قائمة النقاط">النقاط</button>
+      <button class="tb" id="btnImg" title="استيراد صورة الخريطة">صورة</button>
+      <button class="tb" id="btnInstall" hidden>تثبيت</button>
+    </div>
+  </header>
+
+  <aside id="sidebar" hidden>
+    <div id="sideHead">
+      <b>النقاط</b> <span id="cnt" class="cnt">0</span>
+      <button id="sideClose" aria-label="إغلاق">إغلاق</button>
+    </div>
+    <input id="search" placeholder="ابحث باسم أو ملاحظة">
+    <div id="chips"></div>
+    <div id="pinList"></div>
+    <div id="sideFoot">
+      <button class="mini" id="btnExport">تصدير النقاط</button>
+      <button class="mini" id="btnImportPins">استيراد نقاط</button>
+      <button class="mini" id="btnByCoord">إضافة بالإحداثيات</button>
+    </div>
+  </aside>
+
+  <main id="stage">
+    <canvas id="cv"></canvas>
+    <div id="empty">
+      <div class="ecard">
+        <h2>ابدأ بخريطتك</h2>
+        <p>استورد صورة الخريطة من شاشة Mapping داخل اللعبة (أو أي صورة لديك)، ثم ضع الدبابيس بحرية.</p>
+        <button class="btnbig" id="btnEmptyImport">استيراد صورة الخريطة</button>
+        <p class="tiny">يمكنك إسقاط ملف الصورة على الصفحة مباشرة.</p>
+      </div>
+    </div>
+    <div id="status"></div>
+  </main>
+</div>
+
+<input type="file" id="mapFile" accept="image/*" hidden>
+<input type="file" id="pinsFile" accept=".json,application/json" hidden>
+
+<div id="afr" hidden>
+  <div class="modal" id="pinModal">
+    <h3>نقطة على الخريطة</h3>
+    <label>الاسم<input id="pName" maxlength="40"></label>
+    <label>الصنف<select id="pCat"></select></label>
+    <label>ملاحظة<textarea id="pNote" rows="2" maxlength="200"></textarea></label>
+    <div id="pMeta" class="tiny"></div>
+    <div class="mrow">
+      <button class="danger" id="pDel">حذف</button>
+      <button class="ok" id="pSave">حفظ</button>
+    </div>
+  </div>
+
+  <div class="modal" id="calModal">
+    <h3>معايرة الإحداثيات</h3>
+    <div id="calStep" class="tiny"></div>
+    <label id="calPT">إحداثيات اللعبة للنقطة المختارة</label>
+    <div class="two">
+      <label>X<input id="calX" type="number" step="1" inputmode="decimal"></label>
+      <label>Z<input id="calZ" type="number" step="1" inputmode="decimal"></label>
+    </div>
+    <div class="tiny">خذ الإحداثيات من موضعك داخل اللعبة عند نفس المكان (ادخل x و z).</div>
+    <div class="mrow">
+      <button class="danger" id="calReset">أعد من الصفر</button>
+      <button class="ok" id="calSave">سجل النقطة</button>
+      <button class="calx" id="calSkip">إلغاء</button>
+    </div>
+  </div>
+
+  <div class="modal" id="coordModal">
+    <h3>إضافة دبوس بالإحداثيات</h3>
+    <label>الاسم<input id="cName" maxlength="40"></label>
+    <div class="two">
+      <label>X<input id="cX" type="number" step="1" inputmode="decimal"></label>
+      <label>Z<input id="cZ" type="number" step="1" inputmode="decimal"></label>
+    </div>
+    <div class="mrow">
+      <button class="ok" id="cAdd">أضف</button>
+      <button id="cCancel">إلغاء</button>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
