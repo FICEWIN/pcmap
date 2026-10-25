@@ -1,4 +1,4 @@
-const CACHE = 'pm-v2';
+const CACHE = 'pm-v3';
 const TILES = 'pm-tiles-v1';
 const CORE = [
   './',
