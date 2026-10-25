@@ -1,5 +1,5 @@
 {
-  "name": "خريطة الكوكب — Planet Crafter",
+  "name": "خريطة الكوكب — The Planet Crafter",
   "short_name": "خريطة الكوكب",
   "lang": "ar",
   "dir": "rtl",
@@ -9,6 +9,7 @@
   "orientation": "any",
   "background_color": "#07131c",
   "theme_color": "#07131c",
+  "description": "خريطة تفاعلية كواكب The Planet Crafter: صناديق ومذابح ومعادن وبذور، فلاتر وتتبع اكتشاف ودبابيس.",
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }

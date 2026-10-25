@@ -2,105 +2,148 @@
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#07131c">
-<meta name="description" content="خريطة تفاعلية لألعابة The Planet Crafter — دبابيس وملاحظات وقياس مسافات">
-<title>خريطة الكوكب — Planet Crafter</title>
+<meta name="description" content="خريطة تفاعلية كاملة لكواكب The Planet Crafter: صناديق ومذابح ومعادن وبذور مع فلاتر وتتبع اكتشاف ودبابيس ونافذة فوق اللعبة.">
+<title>خريطة الكوكب — The Planet Crafter</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="vendor/ol.css">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <div id="appwrap">
   <header id="topbar">
-    <span id="brand">خريطة الكوكب</span>
-    <div id="tools">
-      <button class="tb" id="btnAdd" title="أضف دبوسا">دبوس</button>
-      <button class="tb" id="btnMeasure" title="قياس مسافة">قياس</button>
-      <button class="tb" id="btnCal" title="معايرة الإحداثيات">معايرة</button>
-      <button class="tb" id="btnUndo" title="حذف آخر دبوس">تراجع</button>
-      <button class="tb" id="btnList" title="قائمة النقاط">النقاط</button>
-      <button class="tb" id="btnImg" title="استيراد صورة الخريطة">صورة</button>
-      <button class="tb" id="btnInstall" hidden>تثبيت</button>
-    </div>
+    <button id="btnMenu" class="iconbtn onlyMobile" aria-label="القائمة والطبقات" title="القائمة والطبقات">☰</button>
+    <div id="brand"><span class="mark">◈</span><span class="txt">خريطة الكوكب</span></div>
+    <label for="planetSel" class="tiny onlyDesktop" style="margin-inline-start:6px">الكوكب</label>
+    <select id="planetSel" title="اختيار الكوكب"></select>
+    <div class="grow"></div>
+    <button id="btnNearest" class="tb onlyDesktop" title="أقرب المواقع لإحداثياتك">موقعي</button>
+    <button id="btnAddPinTop" class="tb onlyDesktop" title="إضافة دبوس خاص">دبوس</button>
+    <button id="btnOverlay" class="tb accent" title="فتح نافذة صغيرة يمكن تثبيتها فوق اللعبة">فوق اللعبة</button>
+    <button id="btnPip" class="tb accent" hidden title="تثبيت النافذة فوق النوافذ">ثبّت فوق اللعبة</button>
   </header>
 
-  <aside id="sidebar" hidden>
-    <div id="sideHead">
-      <b>النقاط</b> <span id="cnt" class="cnt">0</span>
-      <button id="sideClose" aria-label="إغلاق">إغلاق</button>
-    </div>
-    <input id="search" placeholder="ابحث باسم أو ملاحظة">
-    <div id="chips"></div>
-    <div id="pinList"></div>
-    <div id="sideFoot">
-      <button class="mini" id="btnExport">تصدير النقاط</button>
-      <button class="mini" id="btnImportPins">استيراد نقاط</button>
-      <button class="mini" id="btnByCoord">إضافة بالإحداثيات</button>
-    </div>
-  </aside>
+  <div id="drawerBackdrop"></div>
 
-  <main id="stage">
-    <canvas id="cv"></canvas>
-    <div id="empty">
-      <div class="ecard">
-        <h2>ابدأ بخريطتك</h2>
-        <p>استورد صورة الخريطة من شاشة Mapping داخل اللعبة (أو أي صورة لديك)، ثم ضع الدبابيس بحرية.</p>
-        <button class="btnbig" id="btnEmptyImport">استيراد صورة الخريطة</button>
-        <p class="tiny">يمكنك إسقاط ملف الصورة على الصفحة مباشرة.</p>
+  <div id="layout">
+    <aside id="sidebar" aria-label="الطبقات والبحث">
+      <div id="sideScroll">
+        <section class="card">
+          <div class="row between">
+            <b>الاكتشاف</b>
+            <span id="progText" class="num" dir="ltr">0 / 0</span>
+          </div>
+          <div class="bar"><i id="progBar"></i></div>
+          <div id="progCats" class="progcats"></div>
+          <div class="tiny dim">اضغط أي علامة على الخريطة ثم «تم التجميع» لتسجيلها.</div>
+        </section>
+
+        <section class="card">
+          <div class="row between">
+            <b>الطبقات</b>
+            <button id="btnAllCats" class="mini">إظهار الكل</button>
+          </div>
+          <div id="cats" class="cats"></div>
+          <label class="switch row"><input type="checkbox" id="onlyUndiscovered"><span>غير المكتشفة فقط</span></label>
+          <label class="switch row"><input type="checkbox" id="lushToggle"><span>الخريطة المزهرة (بعد التكوين)</span></label>
+        </section>
+
+        <section class="card">
+          <div class="row between"><b>بحث في المواقع</b><span class="tiny dim">الاسم أو النوع</span></div>
+          <input id="search" class="input" type="search" placeholder="صناديق، مذابح، ألمنيوم، هبوط…" autocomplete="off">
+          <div id="searchResults" class="results" hidden></div>
+        </section>
+
+        <section class="card">
+          <div class="row between"><b>دبابيسي</b><span id="pinsCount" class="tiny dim">0</span></div>
+          <div class="row gap">
+            <button id="btnAddPin" class="mini primary">+ دبوس جديد</button>
+            <button id="btnPinsToggle" class="mini" aria-pressed="true">إظهار</button>
+            <div class="grow"></div>
+            <button id="btnNear" class="mini" title="أقرب المواقع لإحداثياتي">موقعي</button>
+          </div>
+          <div id="pinList" class="pinlist"></div>
+          <div class="row gap footbtns">
+            <button id="btnExport" class="mini">تصدير النسخة</button>
+            <button id="btnImport" class="mini">استيراد</button>
+          </div>
+        </section>
+
+        <section class="card credits">
+          <div class="tiny">
+            الخريطة ومواقع الأجسام مبنية على بيانات خريطة المجتمع
+            <a href="https://map.fistshake.net/PlanetCrafter/" target="_blank" rel="noopener">map.fistshake.net</a>.
+            لعبة The Planet Crafter ملك Miju Games. هذا التطبيق غير رسمي وللاستخدام الشخصي.
+            تُعرض البلاطات عبر بوابة الصور wsrv.nl.
+          </div>
+          <div class="tiny dim">الأيقونات من تصميمنا · محرك الخريطة OpenLayers 6.15.1 (BSD).</div>
+          <button id="btnInstall" class="mini wide" hidden>تثبيت التطبيق على الجهاز</button>
+        </section>
       </div>
+    </aside>
+
+    <main id="stage">
+      <div id="map"></div>
+      <div id="tilebar" hidden></div>
+      <div id="mapcredit">الخريطة: <a href="https://map.fistshake.net/PlanetCrafter/" target="_blank" rel="noopener">map.fistshake.net</a> · البلاطات عبر wsrv.nl</div>
+      <div id="hud">
+        <button id="btnZoomIn" class="hudbtn" aria-label="تكبير">+</button>
+        <button id="btnZoomOut" class="hudbtn" aria-label="تصغير">−</button>
+        <button id="btnFit" class="hudbtn small" aria-label="عرض الكوكب كاملًا" title="عرض الكوكب كاملًا">⛶</button>
+      </div>
+      <div id="loading"><div class="spin"></div><div id="loadingText">جارٍ تحميل الخريطة…</div></div>
+    </main>
+  </div>
+
+<div id="popup" class="popup" hidden></div>
+
+<dialog id="pinDlg">
+  <div class="dlg-body">
+    <div class="row between"><h3 id="pinTitle">دبوس جديد</h3><button id="pinCancelX" class="xbtn" aria-label="إغلاق">×</button></div>
+    <label class="field">الاسم
+      <input id="pinName" class="input" maxlength="50" placeholder="مثال: مدخل الكهف">
+    </label>
+    <label class="field">ملاحظة
+      <textarea id="pinNote" class="input" rows="3" maxlength="300" placeholder="اختياري"></textarea>
+    </label>
+    <div class="coordsrow">
+      <label class="field">X<input id="pinX" class="input num" type="number" step="0.1" inputmode="decimal" dir="ltr"></label>
+      <label class="field">Z<input id="pinZ" class="input num" type="number" step="0.1" inputmode="decimal" dir="ltr"></label>
     </div>
-    <div id="status"></div>
-  </main>
+    <div class="row gap dlgbtns">
+      <button id="pinSave" class="mini primary wide">حفظ الدبوس</button>
+      <button id="pinDel" class="mini danger" hidden>حذف</button>
+      <button id="pinCancel" class="mini">إلغاء</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="nearDlg">
+  <div class="dlg-body">
+    <div class="row between"><h3>أقرب المواقع لموقعي</h3><button id="nearCloseX" class="xbtn" aria-label="إغلاق">×</button></div>
+    <div class="tiny dim">أدخل إحداثياتك من شاشة الخريطة في اللعبة (X و Z). ستظهر أقرب الصناديق والمعالم لموقعك.</div>
+    <div class="coordsrow">
+      <label class="field">X<input id="nearX" class="input num" type="number" step="0.1" inputmode="decimal" dir="ltr" placeholder="558.2"></label>
+      <label class="field">Z<input id="nearZ" class="input num" type="number" step="0.1" inputmode="decimal" dir="ltr" placeholder="494.1"></label>
+      <button id="nearGo" class="mini primary" style="align-self:flex-end">ابحث</button>
+    </div>
+    <div id="nearResults" class="results tall"></div>
+  </div>
+</dialog>
+
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+<div id="toast" role="status" aria-live="polite"></div>
 </div>
 
-<input type="file" id="mapFile" accept="image/*" hidden>
-<input type="file" id="pinsFile" accept=".json,application/json" hidden>
-
-<div id="afr" hidden>
-  <div class="modal" id="pinModal">
-    <h3>نقطة على الخريطة</h3>
-    <label>الاسم<input id="pName" maxlength="40"></label>
-    <label>الصنف<select id="pCat"></select></label>
-    <label>ملاحظة<textarea id="pNote" rows="2" maxlength="200"></textarea></label>
-    <div id="pMeta" class="tiny"></div>
-    <div class="mrow">
-      <button class="danger" id="pDel">حذف</button>
-      <button class="ok" id="pSave">حفظ</button>
-    </div>
-  </div>
-
-  <div class="modal" id="calModal">
-    <h3>معايرة الإحداثيات</h3>
-    <div id="calStep" class="tiny"></div>
-    <label id="calPT">إحداثيات اللعبة للنقطة المختارة</label>
-    <div class="two">
-      <label>X<input id="calX" type="number" step="1" inputmode="decimal"></label>
-      <label>Z<input id="calZ" type="number" step="1" inputmode="decimal"></label>
-    </div>
-    <div class="tiny">خذ الإحداثيات من موضعك داخل اللعبة عند نفس المكان (ادخل x و z).</div>
-    <div class="mrow">
-      <button class="danger" id="calReset">أعد من الصفر</button>
-      <button class="ok" id="calSave">سجل النقطة</button>
-      <button class="calx" id="calSkip">إلغاء</button>
-    </div>
-  </div>
-
-  <div class="modal" id="coordModal">
-    <h3>إضافة دبوس بالإحداثيات</h3>
-    <label>الاسم<input id="cName" maxlength="40"></label>
-    <div class="two">
-      <label>X<input id="cX" type="number" step="1" inputmode="decimal"></label>
-      <label>Z<input id="cZ" type="number" step="1" inputmode="decimal"></label>
-    </div>
-    <div class="mrow">
-      <button class="ok" id="cAdd">أضف</button>
-      <button id="cCancel">إلغاء</button>
-    </div>
-  </div>
-</div>
-
+<script src="vendor/ol.js"></script>
 <script src="app.js"></script>
+<script>
+if ('serviceWorker' in navigator && location.protocol.indexOf('http') === 0) {
+  window.addEventListener('load', function () { navigator.serviceWorker.register('sw.js').catch(function () {}); });
+}
+</script>
 </body>
 </html>

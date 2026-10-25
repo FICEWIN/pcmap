@@ -1,657 +1,1122 @@
-'use strict';
-// خريطة الكوكب — تطبيق دبابيس مستقل للعبتها The Planet Crafter (تصميم وكود خاص بنا)
-const $ = s => document.querySelector(s);
-const $$ = s => Array.from(document.querySelectorAll(s));
-const esc = t => String(t == null ? '' : t).replace(/[&<>"']/g, c => ({'&':'&','<':'<','>':'>','"':'"',"'":'&#39;'}[c]));
-const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
-const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+/* خريطة الكوكب — The Planet Crafter
+   محرك: OpenLayers 6.15.1 (BSD)
+   بيانات المواقع: خريطة المجتمع map.fistshake.net (حقائق إحداثيات، مع الإسناد)
+   الأيقونات والواجهة: من تصميمنا. */
+(function () {
+  'use strict';
 
-const CATS = {
-  crate: { n: 'صناديق', c: '#e9a71d' },
-  ore:   { n: 'معادن',  c: '#4aa3ff' },
-  cave:  { n: 'مغاور',  c: '#b26cff' },
-  base:  { n: 'قاعدة',  c: '#38d17f' },
-  wreck: { n: 'حطام',   c: '#ff5f56' },
-  other: { n: 'آخر',    c: '#9fb0c3' }
-};
+  const STORE = 'pc2';
+  const TILE_BASE = 'https://map.fistshake.net/PlanetCrafter';
+  const PIXEL_PROJECTION = new ol.proj.Projection({ code: 'pixels', units: 'pixels' });
 
-// ---------- الحالة والتخزين ----------
-const DEF = { cal: null, pins: [], hidden: [], imgName: '', seq: 0 };
-let S = load();
-function load() {
-  try {
-    const d = JSON.parse(localStorage.getItem('pc_state') || 'null');
-    if (d && Array.isArray(d.pins)) {
-      if (!Array.isArray(d.hidden)) d.hidden = [];
-      return d;
-    }
-  } catch {}
-  return JSON.parse(JSON.stringify(DEF));
-}
-function save() { try { localStorage.setItem('pc_state', JSON.stringify(S)); } catch {} }
+  const PLANETS = {
+    Prime:    { ar: 'برايم',     file: 'prime' },
+    Humble:   { ar: 'هامبل',     file: 'humble' },
+    Selenea:  { ar: 'سيلينيا',   file: 'selenea' },
+    Aqualis:  { ar: 'أكواليس',   file: 'aqualis' },
+    Toxicity: { ar: 'توكسيسيتي', file: 'toxicity' }
+  };
 
-// قاعدة بيانات الصورة (IndexedDB)
-function idb() {
-  return new Promise((res, rej) => {
-    const r = indexedDB.open('pcmap', 1);
-    r.onupgradeneeded = () => r.result.createObjectStore('imgs');
-    r.onsuccess = () => res(r.result);
-    r.onerror = () => rej(r.error);
-  });
-}
-async function idbPut(rec) {
-  try {
-    const db = await idb();
-    await new Promise((res, rej) => {
-      const t = db.transaction('imgs', 'readwrite').objectStore('imgs').put(rec, 'map');
-      t.onsuccess = res; t.onerror = () => rej(t.error);
-    });
-  } catch {}
-}
-async function idbGet() {
-  try {
-    const db = await idb();
-    return await new Promise((res) => {
-      const t = db.transaction('imgs').objectStore('imgs').get('map');
-      t.onsuccess = () => res(t.result); t.onerror = () => res(null);
-    });
-  } catch { return null; }
-}
+  const CATS = {
+    chest:   { ar: 'صناديق عادية',    color: '#3b9dff' },
+    gold:    { ar: 'صناديق ذهبية',    color: '#f4b53f' },
+    altar:   { ar: 'مذابح وشيفرات',   color: '#b97cff' },
+    landing: { ar: 'مواقع هبوط',      color: '#ff7a59' },
+    seed:    { ar: 'بذور ونباتات',    color: '#63d471' },
+    supply:  { ar: 'مؤن وحطام',       color: '#94a3b8' },
+    ore:     { ar: 'معادن وكوارتز',   color: '#2dd4bf' }
+  };
+  const CAT_ORDER = ['chest', 'gold', 'altar', 'landing', 'seed', 'supply', 'ore'];
+  const TRACK = ['chest', 'gold', 'altar'];
 
-// ---------- اللوحة والرؤية ----------
-const cv = $('#cv'), ctx = cv.getContext('2d');
-let img = null, iw = 0, ih = 0, needDraw = true;
-let view = { s: 1, ox: 0, oy: 0 };
-let mode = 'normal'; // normal | add | cal | measure
-let selId = null;
-let mPts = [];       // نقاط القياس
-let calBackup = null;
+  const GA = {
+    Container1: 'صندوق مؤونة', Container2: 'خزانة معدات', GoldenContainer: 'صندوق ذهبي',
+    WardenAustel: 'مذبح الحُرّاس', WardenAustelHidden: 'مذبح مخفي', BlueprintWardensChip: 'مذبح كاشف المفاتيح',
+    Aluminium: 'ألمنيوم', Iridium: 'إيريديوم', Osmium: 'أوسميوم', Sulfur: 'كبريت', Zeolite: 'زيوليت',
+    PulsarQuartz: 'كوارتز نابض', BalzarQuartz: 'كوارتز بلازار', SolarQuartz: 'كوارتز شمسي',
+    MagnetarQuartz: 'كوارتز مغناطيسي', QuasarQuartz: 'كوارتز كوازار', Uranim: 'يورانيوم',
+    Obsidian: 'أوبسيديان', Alloy: 'سبيكة خارقة', 'Rod-iridium': 'قضيب إيريديوم',
+    Seed0: 'بذرة', Seed1: 'بذرة', Seed2: 'بذرة', Seed3: 'بذرة', Seed4: 'نبات توسكا', Seed5: 'بذرة',
+    Seed6: 'بذرة', SeedGold: 'نبات ذهبي', Vegetable0Seed: 'بذور خضار', Vegetable1Seed: 'بذور خضار',
+    Vegetable2Seed: 'بذور خضار', Tree1Seed: 'بذرة شجرة', Vegetube1: 'أنبوب نبات',
+    canister: 'عبوة تخزين', OxygenCapsule1: 'كبسولة أكسجين', MethanCapsule1: 'كبسولة ميثان',
+    FusionGenerator1: 'مفاعل اندماج', RocketReactor: 'محرك صاروخ', WreckSafe: 'خزنة حطام',
+    WreckWardrobe: 'خزانة حطام', Server: 'خادم', Landing: 'موقع هبوط'
+  };
 
-function resize() {
-  const dpr = Math.min(window.devicePixelRatio || 1, 3);
-  cv.width = Math.floor(cv.clientWidth * dpr);
-  cv.height = Math.floor(cv.clientHeight * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  needDraw = true;
-}
-window.addEventListener('resize', resize);
+  const GLYPHS = {
+    chest: '<g fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"><rect x="7.4" y="9.5" width="11.2" height="8.2" rx="1.3"/><path d="M7.4 12.6h11.2M13 15.6v2.1"/></g>',
+    gold: '<path d="M7.2 16.1l-1-7.1 4.2 3L13 7l2.6 5 4.2-3-1 7.1z" fill="#fff" opacity=".96"/><path d="M8.2 17.6h9.6" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/>',
+    altar: '<path d="M13 5.1l5.8 6.9-5.8 6.9-5.8-6.9z" fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/><circle cx="13" cy="12" r="1.7" fill="#fff"/>',
+    ore: '<path d="M13 4.7l4.3 4.4-1.7 8.3H9.4L7.7 9.1z" fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"/><path d="M13 4.7v6.6M7.7 9.1l5.3 2.2 5.3-2.2" fill="none" stroke="#fff" stroke-width="1"/>',
+    seed: '<path d="M8.1 17.7c0-6.1 4.6-9.4 10.7-9.4 0 6.1-3.7 10.2-8.7 10.2-1.1 0-2-.3-2-.8z" fill="#fff" opacity=".94"/><path d="M8.8 17.4c1-3.5 3-5.7 6.5-7.1" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="1.2"/>',
+    supply: '<g fill="none" stroke="#fff" stroke-width="1.5" stroke-linejoin="round"><rect x="8.1" y="10.3" width="9.8" height="7.8" rx="1.2"/><path d="M10.6 10.3V8.1h4.8v2.2M8.1 13.4h9.8"/></g>',
+    landing: '<g fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4.8v7.3M9.8 9.2l3.2 3.2 3.2-3.2"/><path d="M7.3 18.1h11.4"/></g>'
+  };
 
-function fitView() {
-  const w = cv.clientWidth, h = cv.clientHeight;
-  if (!img || !w) return;
-  const pad = 24;
-  view.s = clamp(Math.min((w - pad * 2) / iw, (h - pad * 2) / ih), 0.05, 20);
-  view.ox = (w - iw * view.s) / 2;
-  view.oy = (h - ih * view.s) / 2;
-  needDraw = true;
-}
+  const $ = id => document.getElementById(id);
+  const appwrap = $('appwrap');
+  const stage = $('stage');
+  const planetSel = $('planetSel');
+  const catsEl = $('cats');
+  const progText = $('progText');
+  const progBar = $('progBar');
+  const progCats = $('progCats');
+  const searchEl = $('search');
+  const searchResults = $('searchResults');
+  const pinListEl = $('pinList');
+  const pinsCount = $('pinsCount');
+  const popupEl = $('popup');
+  const toastEl = $('toast');
+  const loadingEl = $('loading');
+  const loadingText = $('loadingText');
+  const pinDlg = $('pinDlg');
+  const pinTitle = $('pinTitle');
+  const pinName = $('pinName');
+  const pinNote = $('pinNote');
+  const pinX = $('pinX');
+  const pinZ = $('pinZ');
+  const pinSave = $('pinSave');
+  const pinDel = $('pinDel');
+  const nearDlg = $('nearDlg');
+  const nearX = $('nearX');
+  const nearZ = $('nearZ');
+  const nearResults = $('nearResults');
 
-function loop() {
-  if (needDraw) { needDraw = false; draw(); }
-  requestAnimationFrame(loop);
-}
+  const isCompact = new URLSearchParams(location.search).get('compact') === '1';
+  const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
 
-// ---------- المعايرة (إحداثيات اللعبة) ----------
-function calInfo() {
-  const c = S.cal;
-  if (!c || !c.done) return null;
-  const mx = c.m2x - c.m1x, my = c.m2y - c.m1y;
-  const dx = c.g1x - c.g2x, dz = c.g1z - c.g2z;
-  let ax = null, ay = null, bx = 0, by = 0;
-  if (Math.abs(mx) > 0.0001) { ax = dx / mx; bx = c.g1x - ax * c.m1x; }
-  if (Math.abs(my) > 0.0001) { ay = dz / my; by = c.g1z - ay * c.m1y; }
-  if (ax == null && ay == null) return null;
-  if (ax == null) ax = ay;
-  if (ay == null) ay = ax;
-  return { ax, ay, bx, by };
-}
-function mapToGame(lx, ly) {
-  const ci = calInfo();
-  if (!ci) return null;
-  return { x: lx * ci.ax + ci.bx, z: ly * ci.ay + ci.by };
-}
-function gameToMap(gx, gz) {
-  const ci = calInfo();
-  if (!ci) return null;
-  return { x: (gx - ci.bx) / ci.ax, y: (gz - ci.by) / ci.ay };
-}
-const fmtN = n => (Math.abs(n) >= 100 ? n.toFixed(0) : n.toFixed(1));
+  const state = {
+    planet: 'Prime',
+    data: null,
+    cfg: null,
+    counts: {},
+    items: [],
+    byId: new Map(),
+    source: null,
+    found: {},
+    pins: {},
+    hidden: new Set(['ore', 'seed', 'supply']),
+    onlyUndiscovered: false,
+    lush: false,
+    showPins: true,
+    pinMode: false,
+    selectedId: null,
+    popupItem: null,
+    editingPin: null,
+    lastNear: null,
+    ready: false
+  };
 
-function draw() {
-  const w = cv.clientWidth, h = cv.clientHeight;
-  ctx.clearRect(0, 0, w, h);
-  const gs = 120;
-  ctx.strokeStyle = 'rgba(120,170,200,.07)';
-  ctx.lineWidth = 1;
-  for (let x = Math.ceil(view.ox / gs) * gs; x < w; x += gs) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, h); ctx.stroke(); }
-  for (let y = Math.ceil(view.oy / gs) * gs; y < h; y += gs) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke(); }
-  if (img) {
-    ctx.drawImage(img, view.ox, view.oy, iw * view.s, ih * view.s);
-    ctx.strokeStyle = 'rgba(255,122,61,.35)';
-    ctx.strokeRect(view.ox - .5, view.oy - .5, iw * view.s + 1, ih * view.s + 1);
-  }
-  if (mode === 'measure' && mPts.length === 2) {
-    const a = mToS(mPts[0]), b = mToS(mPts[1]);
-    ctx.strokeStyle = '#ff7a3d'; ctx.setLineDash([6, 5]); ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-    ctx.setLineDash([]);
-  }
-  const q = ($('#search').value || '').trim().toLowerCase();
-  for (const p of S.pins) {
-    if (S.hidden.includes(p.cat)) continue;
-    if (q && !(p.name + ' ' + (p.note || '') + ' ' + (CATS[p.cat] || CATS.other).n).toLowerCase().includes(q)) continue;
-    const sp = mToS({ x: p.px, y: p.py });
-    const r = clamp(5 + 3 * Math.sqrt(view.s), 7, 14);
-    if (sp.x < -40 || sp.y < -40 || sp.x > w + 40 || sp.y > h + 40) continue;
-    ctx.beginPath(); ctx.arc(sp.x, sp.y, r, 0, 7);
-    ctx.fillStyle = (CATS[p.cat] || CATS.other).c; ctx.fill();
-    ctx.lineWidth = 2; ctx.strokeStyle = '#050b12'; ctx.stroke();
-    if (selId === p.id) { ctx.beginPath(); ctx.arc(sp.x, sp.y, r + 5, 0, 7); ctx.strokeStyle = '#ff7a3d'; ctx.lineWidth = 2.5; ctx.stroke(); }
-    if (view.s > 1.4 || mode === 'measure') {
-      ctx.font = '600 11px Segoe UI, Tahoma';
-      ctx.textAlign = 'center';
-      const tw = ctx.measureText(p.name).width + 8;
-      ctx.fillStyle = 'rgba(3,10,16,.75)';
-      ctx.fillRect(sp.x - tw / 2, sp.y + r + 3, tw, 15);
-      ctx.fillStyle = '#fff';
-      ctx.fillText(p.name, sp.x, sp.y + r + 14);
-    }
-  }
-  if (mode === 'measure' && mPts.length === 2) {
-    const a = mToS(mPts[0]), b = mToS(mPts[1]);
-    const g1 = mapToGame(mPts[0].x, mPts[0].y), g2 = mapToGame(mPts[1].x, mPts[1].y);
-    const label = (g1 && g2) ? fmtN(Math.hypot(g2.x - g1.x, g2.z - g1.z)) + ' م' : Math.round(Math.hypot(mPts[1].x - mPts[0].x, mPts[1].y - mPts[0].y)) + ' بكسل';
-    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2 - 18;
-    ctx.font = '900 13px Segoe UI, Tahoma';
-    const tw = ctx.measureText(label).width + 12;
-    ctx.fillStyle = '#ff7a3d'; ctx.fillRect(mx - tw / 2, my - 10, tw, 20);
-    ctx.fillStyle = '#1c0f06'; ctx.textAlign = 'center'; ctx.fillText(label, mx, my + 4);
-  }
-  if (mode === 'cal' && S.cal && !S.cal.done && S.cal.m1x != null && S.cal.g1x != null) {
-    dot(mToS({ x: S.cal.m1x, y: S.cal.m1y }), '#38d17f');
-  }
-  if (mode === 'cal' && S.cal && !S.cal.done && S.cal.m1x != null && S.cal.g1x == null) {
-    dot(mToS({ x: S.cal.m1x, y: S.cal.m1y }), '#ff7a3d');
-  }
-}
-
-function dot(p, color) {
-  ctx.beginPath(); ctx.arc(p.x, p.y, 8, 0, 7);
-  ctx.fillStyle = color; ctx.fill();
-  ctx.strokeStyle = '#050b12'; ctx.stroke();
-}
-
-const sToM = (x, y) => ({ x: (x - view.ox) / view.s, y: (y - view.oy) / view.s });
-const mToS = p => ({ x: p.x * view.s + view.ox, y: p.y * view.s + view.oy });
-
-// ---------- الإدخال ----------
-const ptrs = new Map();
-let panLast = null, pinch0 = null;
-let down0 = null, moved = false, pressTimer = null, dragPin = null, suppress = 0;
-
-cv.addEventListener('wheel', e => {
-  e.preventDefault();
-  const r = cv.getBoundingClientRect();
-  const mx = e.clientX - r.left, my = e.clientY - r.top;
-  const k = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  const before = sToM(mx, my);
-  view.s = clamp(view.s * k, 0.05, 40);
-  view.ox = mx - before.x * view.s;
-  view.oy = my - before.y * view.s;
-  needDraw = true;
-}, { passive: false });
-
-cv.addEventListener('contextmenu', e => e.preventDefault());
-
-cv.addEventListener('pointerdown', e => {
-  try { cv.setPointerCapture(e.pointerId); } catch {}
-  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (ptrs.size === 2) {
-    clearPress();
-    const p = [...ptrs.values()];
-    pinch0 = { d: Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y), s: view.s };
-    panLast = null; down0 = null;
-  } else if (ptrs.size === 1) {
-    down0 = { x: e.clientX, y: e.clientY, t: Date.now() };
-    moved = false; dragPin = null;
-    const r = cv.getBoundingClientRect();
-    const hit = hitPin(e.clientX - r.left, e.clientY - r.top);
-    if (hit && mode === 'normal') dragPin = hit.id;
-    if (e.pointerType !== 'mouse') {
-      clearPress();
-      pressTimer = setTimeout(() => {
-        if (!moved && mode === 'normal' && !dragPin) {
-          const mp = sToM(e.clientX - r.left, e.clientY - r.top);
-          addPin(mp);
-          suppress = Date.now();
-        }
-      }, 550);
-    }
-  }
-});
-function clearPress() { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } }
-
-cv.addEventListener('pointermove', e => {
-  const r = cv.getBoundingClientRect();
-  updStatus(e.clientX - r.left, e.clientY - r.top);
-  if (!ptrs.has(e.pointerId)) return;
-  const prev = ptrs.get(e.pointerId);
-  ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (ptrs.size === 2 && pinch0) {
-    const p = [...ptrs.values()];
-    const d = Math.hypot(p[1].x - p[0].x, p[1].y - p[0].y);
-    if (d < 5) return;
-    const ns = clamp(pinch0.s * (d / pinch0.d), 0.05, 40);
-    const cx = (p[0].x + p[1].x) / 2 - r.left, cy = (p[0].y + p[1].y) / 2 - r.top;
-    const before = sToM(cx, cy);
-    view.ox = cx - before.x * ns;
-    view.oy = cy - before.y * ns;
-    view.s = ns; needDraw = true;
-    return;
-  }
-  const dx = e.clientX - prev.x, dy = e.clientY - prev.y;
-  if (down0 && Math.hypot(e.clientX - down0.x, e.clientY - down0.y) > 8) { moved = true; clearPress(); }
-  if (dragPin != null && moved) {
-    const mp = sToM(e.clientX - r.left, e.clientY - r.top);
-    const pin = S.pins.find(p => p.id === dragPin);
-    if (pin) { pin.px = mp.x; pin.py = mp.y; needDraw = true; }
-  } else if (down0) {
-    view.ox += dx; view.oy += dy; needDraw = true;
-  }
-});
-
-cv.addEventListener('pointerup', e => {
-  clearPress();
-  const r = cv.getBoundingClientRect();
-  ptrs.delete(e.pointerId);
-  if (ptrs.size > 0) { down0 = null; pinch0 = null; return; }
-  const dur = down0 ? Date.now() - down0.t : 999;
-  const wasDragPin = dragPin; dragPin = null; pinch0 = null;
-  try { cv.releasePointerCapture(e.pointerId); } catch {}
-  if (moved) {
-    if (wasDragPin != null) { save(); renderList(); }
-    down0 = null; return;
-  }
-  if (suppress && Date.now() - suppress < 350) { down0 = null; return; }
-  const sx = e.clientX - r.left, sy = e.clientY - r.top;
-  if (mode === 'add') { addPin(sToM(sx, sy)); down0 = null; return; }
-  if (mode === 'measure') {
-    const mp = sToM(sx, sy);
-    mPts = mPts.length >= 2 ? [mp] : mPts.concat([mp]);
-    needDraw = true; down0 = null; return;
-  }
-  if (mode === 'cal') { calClick(sToM(sx, sy)); down0 = null; return; }
-  const hit = hitPin(sx, sy);
-  if (hit && dur < 450) { selId = hit.id; openPin(hit.id); needDraw = true; }
-  down0 = null;
-});
-
-cv.addEventListener('pointercancel', e => {
-  clearPress();
-  ptrs.delete(e.pointerId);
-  pinch0 = null; down0 = null; dragPin = null;
-});
-
-cv.addEventListener('dblclick', e => {
-  if (mode !== 'normal') return;
-  const r = cv.getBoundingClientRect();
-  const sx = e.clientX - r.left, sy = e.clientY - r.top;
-  if (hitPin(sx, sy)) return; // دوس على دبوس موجود لا يضيف دبوسا
-  addPin(sToM(sx, sy));
-});
-
-function hitPin(sx, sy) {
-  let best = null, bd = 1e9;
-  for (const p of S.pins) {
-    if (S.hidden.includes(p.cat)) continue;
-    const sp = mToS({ x: p.px, y: p.py });
-    const d = Math.hypot(sp.x - sx, sp.y - sy);
-    const r = clamp(5 + 3 * Math.sqrt(view.s), 7, 14) + 4;
-    if (d < r && d < bd) { bd = d; best = p; }
-  }
-  return best;
-}
-
-function addPin(mp) {
-  if (!img) { toast('استورد صورة الخريطة أولا'); return; }
-  const pin = { id: uid(), name: 'نقطة ' + (S.seq + 1), cat: 'other', note: '', px: +mp.x.toFixed(1), py: +mp.y.toFixed(1) };
-  S.seq++; S.pins.push(pin);
-  save(); selId = pin.id; needDraw = true; renderList(); openPin(pin.id);
-  if (mode === 'add') { mode = 'normal'; $('#btnAdd').classList.remove('on'); }
-}
-
-// ---------- المعايرة ----------
-function calClick(mp) {
-  if (!S.cal || S.cal.done) {
-    S.cal = { step: 1, m1x: mp.x, m1y: mp.y };
-    calPrompt(
-      'النقطة 1 من 2 — اكتب إحداثيات اللعبة (X و Z) لمكان النقطة المختارة على الصورة.',
-      'اضغط النقطة الثانية على الخريطة'
-    );
-  } else if (S.cal.step === 2) {
-    S.cal.m2x = mp.x; S.cal.m2y = mp.y;
-    calPrompt(
-      'النقطة 2 من 2 — اكتب إحداثيات اللعبة للنقطة الثانية.',
-      'اكتب إحداثياتها ثم سجّل'
-    );
-  } else if (S.cal.step === 1 && S.cal.g1x != null) {
-    S.cal = { step: 1, m1x: mp.x, m1y: mp.y }; // لم تسجل الأولى بعد
-    calPrompt('النقطة 1 من 2 — اكتب إحداثيات اللعبة للنقطة المختارة.', '');
-  } else {
-    S.cal.m1x = mp.x; S.cal.m1y = mp.y;
-    calPrompt('النقطة 1 من 2 — اكتب إحداثيات اللعبة للنقطة المختارة.', '');
-  }
-  needDraw = true;
-}
-function calPrompt(msg, next) {
-  $('#calStep').textContent = msg;
-  $('#calX').value = ''; $('#calZ').value = '';
-  openModal('calModal');
-  if (next) toast(next);
-}
-$('#calSave').onclick = () => {
-  const gx = parseFloat($('#calX').value), gz = parseFloat($('#calZ').value);
-  if (isNaN(gx) || isNaN(gz)) { toast('اكتب الإحداثيين'); return; }
-  if (!S.cal || S.cal.m1x == null) return;
-  if (S.cal.step === 1) {
-    S.cal.g1x = gx; S.cal.g1z = gz; S.cal.step = 2;
-    closeModal(true);
-    toast('مرر المكان الثاني واضغط عليه');
-  } else {
-    S.cal.g2x = gx; S.cal.g2z = gz;
-    S.cal.done = true; S.cal.step = 0;
-    closeModal(true);
-    save(); needDraw = true;
-    const ci = calInfo();
-    mode = 'normal'; $('#btnCal').classList.remove('on');
-    toast('تمت المعايرة — ' + fmtN(Math.abs(ci.ax)) + 'م لكل بكسل أفقيا');
-  }
-};
-$('#calSkip').onclick = () => {
-  if (calBackup != null) S.cal = calBackup;
-  else if (S.cal && !S.cal.done) S.cal = null;
-  calBackup = null;
-  closeModal(true);
-  mode = 'normal'; $('#btnCal').classList.remove('on');
-  toast('لغيت المعايرة');
-};
-$('#calReset').onclick = () => {
-  S.cal = null;
-  closeModal(true);
-  toast('اضغط أول نقطة على الخريطة');
-};
-
-// ---------- قائمة النقاط ----------
-function renderList() {
-  const q = ($('#search').value || '').trim().toLowerCase();
-  $('#cnt').textContent = S.pins.length;
-  $('#chips').innerHTML = Object.entries(CATS).map(([k, o]) => {
-    const n = S.pins.filter(p => p.cat === k).length;
-    const off = S.hidden.includes(k);
-    return `<button class="chip ${off ? 'off' : 'on'}" data-cat="${k}" style="color:${o.c}">${o.n} <span class="n">${n}</span></button>`;
-  }).join('');
-  const arr = S.pins.filter(p => !S.hidden.includes(p.cat))
-    .filter(p => !q || (p.name + ' ' + (p.note || '')).toLowerCase().includes(q));
-  $('#pinList').innerHTML = arr.reverse().map(p => {
-    const g = mapToGame(p.px, p.py);
-    const co = g ? `X ${fmtN(g.x)} — Z ${fmtN(g.z)}` : 'بدون معايرة';
-    return `<div class="prow ${selId === p.id ? 'sel' : ''}" data-id="${p.id}">
-      <span class="pdot" style="background:${(CATS[p.cat] || CATS.other).c}"></span>
-      <div class="pmid"><b>${esc(p.name)}</b><small>${co}</small></div>
-      <button class="pdelete" data-del="${p.id}">حذف</button>
-    </div>`;
-  }).join('') || '<p class="tiny" style="padding:.6rem">لا نقاط بعد — اضغط دبوسا على الخريطة أو زر دبوس ثم مكان.</p>';
-}
-$('#sidebar').addEventListener('click', e => {
-  const del = e.target.closest('[data-del]');
-  if (del) {
-    S.pins = S.pins.filter(p => p.id !== del.dataset.del);
-    if (selId === del.dataset.del) selId = null;
-    save(); renderList(); needDraw = true;
-    return;
-  }
-  const row = e.target.closest('.prow');
-  if (row) {
-    selId = row.dataset.id; renderList();
-    const p = S.pins.find(x => x.id === selId);
-    if (p) {
-      view.ox = cv.clientWidth / 2 - p.px * view.s;
-      view.oy = cv.clientHeight / 2 - p.py * view.s;
-      needDraw = true;
-      if (window.innerWidth <= 640) closeSidebar();
-    }
-  }
-  const chip = e.target.closest('[data-cat]');
-  if (chip) {
-    const c = chip.dataset.cat;
-    if (S.hidden.includes(c)) S.hidden = S.hidden.filter(x => x !== c); else S.hidden.push(c);
-    save(); renderList(); needDraw = true;
-  }
-});
-$('#search').addEventListener('input', renderList);
-
-function toggleSidebar(force) {
-  const sb = $('#sidebar');
-  const show = force != null ? force : sb.hidden;
-  if (show) {
-    sb.style.top = document.getElementById('topbar').offsetHeight + 'px';
-    renderList();
-  }
-  sb.hidden = !show;
-}
-const closeSidebar = () => toggleSidebar(false);
-$('#btnList').onclick = () => toggleSidebar();
-$('#sideClose').onclick = closeSidebar;
-
-// ---------- نوافذ ----------
-function openModal(id) {
-  $('#afr').hidden = false;
-  $$('.modal').forEach(m => m.style.display = 'none');
-  $('#' + id).style.display = '';
-}
-function closeModal(keepCal) {
-  $('#afr').hidden = true;
-  if (!keepCal && S.cal && !S.cal.done) {
-    if (calBackup != null) S.cal = calBackup;
-    else S.cal = null;
-    calBackup = null;
-  }
-  needDraw = true;
-}
-$('#afr').addEventListener('click', e => { if (e.target === $('#afr')) closeModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('#afr').hidden) closeModal(); });
-
-$('#pCat').innerHTML = Object.entries(CATS).map(([k, o]) => `<option value="${k}">${esc(o.n)}</option>`).join('');
-let openPinId = null;
-function openPin(id) {
-  const p = S.pins.find(x => x.id === id);
-  if (!p) return;
-  openPinId = id;
-  $('#pName').value = p.name;
-  $('#pCat').value = p.cat;
-  $('#pNote').value = p.note || '';
-  const g = mapToGame(p.px, p.py);
-  $('#pMeta').textContent = g ? `X ${fmtN(g.x)} — Z ${fmtN(g.z)}` : 'بكسل: ' + Math.round(p.px) + ',' + Math.round(p.py);
-  openModal('pinModal');
-  setTimeout(() => { $('#pName').focus(); try { $('#pName').select(); } catch {} }, 60);
-}
-$('#pSave').onclick = () => {
-  const p = S.pins.find(x => x.id === openPinId);
-  if (p) {
-    p.name = $('#pName').value.trim() || p.name;
-    p.cat = $('#pCat').value;
-    p.note = $('#pNote').value.trim();
-    save(); renderList(); needDraw = true;
-  }
-  closeModal();
-};
-$('#pDel').onclick = () => {
-  S.pins = S.pins.filter(x => x.id !== openPinId);
-  selId = null; save(); renderList(); needDraw = true; closeModal();
-};
-
-// ---------- إضافة بالإحداثيات ----------
-$('#btnByCoord').onclick = () => {
-  if (!calInfo()) { toast('عاير الإحداثيات أولا'); return; }
-  $('#cName').value = ''; $('#cX').value = ''; $('#cZ').value = '';
-  openModal('coordModal');
-  setTimeout(() => $('#cX').focus(), 60);
-};
-$('#cAdd').onclick = () => {
-  const gx = parseFloat($('#cX').value), gz = parseFloat($('#cZ').value);
-  if (isNaN(gx) || isNaN(gz)) { toast('اكتب X و Z'); return; }
-  const mp = gameToMap(gx, gz);
-  if (!mp) { toast('المعايرة غير صالحة'); return; }
-  addPinHard(mp, $('#cName').value.trim() || ('C ' + fmtN(gx) + ',' + fmtN(gz)));
-  closeModal();
-};
-function addPinHard(mp, name) {
-  if (!img) { toast('استورد صورة الخريطة أولا'); return; }
-  S.pins.push({ id: uid(), name, cat: 'other', note: '', px: +mp.x.toFixed(1), py: +mp.y.toFixed(1) });
-  S.seq++; save(); renderList(); needDraw = true;
-}
-$('#cCancel').onclick = () => closeModal();
-
-// ---------- تصدير/استيراد ----------
-$('#btnExport').onclick = () => {
-  const data = { app: 'pcmap', ver: 1, cal: S.cal, pins: S.pins };
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 1)], { type: 'application/json' }));
-  a.download = 'pcmap-points.json';
-  a.click();
-};
-$('#btnImportPins').onclick = () => $('#pinsFile').click();
-$('#pinsFile').onchange = e => {
-  const f = e.target.files[0];
-  e.target.value = '';
-  if (!f) return;
-  const r = new FileReader();
-  r.onload = () => {
+  /* ================= تخزين ================= */
+  function loadJSON(key, def) {
     try {
-      const d = JSON.parse(r.result);
-      if (!d || !Array.isArray(d.pins)) throw 0;
-      if (d.cal && d.cal.done) S.cal = d.cal;
-      let n = 0;
-      for (const p of d.pins) {
-        if (p && typeof p.px === 'number' && typeof p.py === 'number') {
-          S.pins.push({ id: uid(), name: String(p.name || 'نقطة').slice(0, 40), cat: CATS[p.cat] ? p.cat : 'other', note: String(p.note || '').slice(0, 200), px: p.px, py: p.py });
-          S.seq++; n++;
+      const raw = localStorage.getItem(STORE + '.' + key);
+      return raw ? JSON.parse(raw) : def;
+    } catch (e) { return def; }
+  }
+  function saveJSON(key, value) {
+    try { localStorage.setItem(STORE + '.' + key, JSON.stringify(value)); } catch (e) {}
+  }
+  function loadPrefs() {
+    const p = loadJSON('prefs', {}) || {};
+    if (p.planet && PLANETS[p.planet]) state.planet = p.planet;
+    if (Array.isArray(p.hidden)) state.hidden = new Set(p.hidden.filter(c => CATS[c]));
+    state.onlyUndiscovered = !!p.onlyUndiscovered;
+    state.lush = !!p.lush;
+    state.showPins = p.showPins !== false;
+    if (Array.isArray(p.lastNear)) state.lastNear = p.lastNear;
+  }
+  function savePrefs() {
+    saveJSON('prefs', {
+      planet: state.planet,
+      hidden: [...state.hidden],
+      onlyUndiscovered: state.onlyUndiscovered,
+      lush: state.lush,
+      showPins: state.showPins,
+      lastNear: state.lastNear
+    });
+  }
+  function ensureFound(planet) {
+    if (!state.found[planet]) {
+      const arr = loadJSON('found.' + planet, []);
+      state.found[planet] = new Set(Array.isArray(arr) ? arr : []);
+    }
+    return state.found[planet];
+  }
+  function saveFound(planet) {
+    saveJSON('found.' + planet, [...ensureFound(planet)]);
+  }
+  function ensurePins(planet) {
+    if (!state.pins[planet]) {
+      const arr = loadJSON('pins.' + planet, []);
+      state.pins[planet] = Array.isArray(arr) ? arr.filter(p => p && isFinite(p.x) && isFinite(p.z)) : [];
+    }
+    return state.pins[planet];
+  }
+  function savePins(planet) {
+    saveJSON('pins.' + planet, ensurePins(planet));
+  }
+
+  /* ================= أدوات ================= */
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+  function fmt(v) {
+    if (!isFinite(v)) return '—';
+    return (Math.round(v * 10) / 10).toLocaleString('en-US', { maximumFractionDigits: 1 });
+  }
+  function inputNum(v) {
+    return isFinite(v) ? String(Math.round(v * 10) / 10) : '';
+  }
+  function normAr(s) {
+    return String(s == null ? '' : s).toLowerCase()
+      .replace(/[أإآ]/g, 'ا').replace(/ى/g, 'ي').replace(/ة/g, 'ه').replace(/[ًٌٍَُِّْ]/g, '')
+      .replace(/\s+/g, ' ').trim();
+  }
+  let toastTimer = null;
+  function toast(msg, kind) {
+    toastEl.textContent = msg;
+    toastEl.className = kind === 'warn' ? 'show warn' : 'show';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { toastEl.className = ''; }, 3200);
+  }
+  function closeDrawer() {
+    if (isMobile() || isCompact) appwrap.classList.remove('sideOpen');
+  }
+
+  /* ================= أيقونات ================= */
+  const iconCache = new Map();
+  function iconBucket() {
+    const r = map.getView().getResolution() || 1;
+    if (r >= 5) return 0.62;
+    if (r >= 3) return 0.74;
+    if (r >= 1.6) return 0.88;
+    return 1;
+  }
+  function markerIcon(cat, found, selected, bucket) {
+    const key = cat + '|' + (found ? '1' : '0') + '|' + (selected ? '1' : '0') + '|' + bucket;
+    if (iconCache.has(key)) return iconCache.get(key);
+    const color = found ? '#20b26b' : (CATS[cat] ? CATS[cat].color : '#9bb7c8');
+    const glyph = GLYPHS[cat] || GLYPHS.ore;
+    const badge = found
+      ? '<circle cx="19.6" cy="19.6" r="4.7" fill="#22c55e" stroke="#06121c" stroke-width="1.3"/>' +
+        '<path d="M17.5 19.7l1.5 1.5 3-3.2" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'
+      : '';
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="26" height="26" viewBox="0 0 26 26">' +
+      '<path d="M13 1.4l9.5 4.2v7.4c0 4.7-3.8 8.3-9.5 10.2C7.3 21.3 3.5 17.7 3.5 13V5.6L13 1.4z" fill="' + color + '" stroke="' + (found ? '#0b5c37' : '#04121c') + '" stroke-width="1.3"/>' +
+      glyph + badge + '</svg>';
+    const icon = new ol.style.Icon({
+      src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+      anchor: [0.5, 0.5],
+      scale: (selected ? 1.35 : 1) * bucket
+    });
+    iconCache.set(key, icon);
+    return icon;
+  }
+  let pinIconBase = null;
+  function pinIcon() {
+    if (pinIconBase) return pinIconBase;
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="30" height="30" viewBox="0 0 30 30">' +
+      '<path d="M15 2.8c4.3 0 7.6 3.2 7.6 7.2 0 5.3-7.6 13.6-7.6 13.6S7.4 15.3 7.4 10c0-4 3.3-7.2 7.6-7.2z" fill="#ff5c8a" stroke="#3a0c1c" stroke-width="1.3"/>' +
+      '<circle cx="15" cy="10" r="2.7" fill="#fff"/></svg>';
+    pinIconBase = new ol.style.Icon({
+      src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg),
+      anchor: [0.5, 1]
+    });
+    return pinIconBase;
+  }
+
+  /* ================= الخريطة ================= */
+  const barrenLayer = new ol.layer.Tile({ zIndex: 0 });
+  const lushLayer = new ol.layer.Tile({ zIndex: 1, visible: false });
+  const poiLayer = new ol.layer.Vector({
+    zIndex: 10,
+    updateWhileAnimating: false,
+    updateWhileInteracting: false,
+    style: function (feature) {
+      const cat = feature.get('cat');
+      if (!cat || state.hidden.has(cat)) return null;
+      const id = feature.get('gid');
+      const found = TRACK.indexOf(cat) >= 0 && ensureFound(state.planet).has(id);
+      if (state.onlyUndiscovered && found) return null;
+      const selected = state.selectedId === id;
+      return new ol.style.Style({
+        image: markerIcon(cat, found, selected, iconBucket()),
+        zIndex: selected ? 500 : (found ? 1 : 2)
+      });
+    }
+  });
+  const meSource = new ol.source.Vector();
+  const meLayer = new ol.layer.Vector({
+    zIndex: 40,
+    source: meSource,
+    style: new ol.style.Style({
+      image: new ol.style.Circle({
+        radius: 8,
+        fill: new ol.style.Fill({ color: '#ff3d6e' }),
+        stroke: new ol.style.Stroke({ color: '#fff', width: 2 })
+      }),
+      text: new ol.style.Text({
+        text: 'موقعي',
+        offsetY: -17,
+        font: '11px Tahoma, sans-serif',
+        fill: new ol.style.Fill({ color: '#fff' }),
+        stroke: new ol.style.Stroke({ color: '#210610', width: 3 })
+      })
+    })
+  });
+  const pinLayer = new ol.layer.Vector({
+    zIndex: 30,
+    style: function (feature) {
+      return new ol.style.Style({ image: pinIcon(), zIndex: 10 });
+    }
+  });
+
+  const initialRes = [25.6, 12.8, 6.4, 3.2, 1.6, 0.8, 0.4];
+  const map = new ol.Map({
+    target: 'map',
+    layers: [barrenLayer, lushLayer, poiLayer, meLayer, pinLayer],
+    view: new ol.View({
+      projection: PIXEL_PROJECTION,
+      center: [500, 500],
+      resolutions: initialRes.slice()
+    }),
+    controls: ol.control.defaults({
+      zoom: false,
+      rotate: false,
+      attribution: false
+    }),
+    interactions: ol.interaction.defaults({ altShiftDragRotate: false, pinchRotate: false })
+  });
+
+  const popupOverlay = new ol.Overlay({
+    element: popupEl,
+    positioning: 'bottom-center',
+    offset: [0, -12],
+    stopEvent: true
+  });
+  map.addOverlay(popupOverlay);
+
+  /* ================= بلاطات الخريطة ================= */
+  const tilebar = $('tilebar');
+  let tilePending = 0;
+  let tilebarTimer = null;
+  function tileStart() {
+    tilePending++;
+    if (tilePending === 1) {
+      clearTimeout(tilebarTimer);
+      tilebarTimer = setTimeout(function () {
+        if (tilePending > 0) tilebar.hidden = false;
+      }, 180);
+    }
+  }
+  function tileEnd() {
+    tilePending = Math.max(0, tilePending - 1);
+    if (tilePending === 0) {
+      clearTimeout(tilebarTimer);
+      tilebar.hidden = true;
+    }
+  }
+  function watchTileSource(source) {
+    source.on('tileloadstart', tileStart);
+    source.on('tileloadend', tileEnd);
+    source.on('tileloaderror', tileEnd);
+  }
+  function fitPlanet() {
+    if (!state.cfg) return;
+    map.getView().fit(state.cfg.extent, { padding: [26, 26, 26, 26], duration: 250 });
+  }
+  function makeTileSource(cfg, kind) {
+    const ver = kind === 'lush' ? cfg.lush : cfg.barren;
+    const name = kind === 'lush' ? 'Lush' : 'Barren';
+    return new ol.source.TileImage({
+      tileGrid: new ol.tilegrid.TileGrid({
+        extent: cfg.extent,
+        origin: cfg.origin,
+        resolutions: cfg.resolutions,
+        tileSize: [256, 256]
+      }),
+      tileUrlFunction: function (tileCoord) {
+        const orig = TILE_BASE + '/Planet/' + cfg.planet + '/Tiles/' + name + '_' + ver + '/' +
+          tileCoord[0] + '/' + tileCoord[1] + '/' + (-1 - tileCoord[2]) + '.png';
+        return 'https://wsrv.nl/?url=' + encodeURIComponent(orig) + '&output=webp&q=88';
+      },
+      attributions: 'خريطة: <a href="https://map.fistshake.net/PlanetCrafter/" target="_blank" rel="noopener">map.fistshake.net</a>'
+    });
+  }
+
+  /* ================= تحميل الكوكب ================= */
+  let loadSeq = 0;
+  function buildItems(data) {
+    const totals = {};
+    for (const row of data.items) totals[row[2]] = (totals[row[2]] || 0) + 1;
+    const seen = {};
+    const items = data.items.map(function (row) {
+      const id = row[0], cat = row[1], grp = row[2], x = row[3], z = row[4];
+      seen[grp] = (seen[grp] || 0) + 1;
+      const base = GA[grp] || grp;
+      const label = totals[grp] > 1 ? base + ' ' + seen[grp] : base;
+      return { id, cat, grp, x, z, label, _s: normAr(label + ' ' + grp + ' ' + (CATS[cat] ? CATS[cat].ar : '')) };
+    });
+    (data.landings || []).forEach(function (row, i) {
+      const x = row[0], z = row[1], name = row[2];
+      const label = name && name !== 'Standard' ? name : 'هبوط قياسي';
+      items.push({ id: 'L' + (i + 1), cat: 'landing', grp: 'Landing', x, z, label, _s: normAr(label + ' موقع هبوط ' + name) });
+    });
+    return items;
+  }
+  function buildPlanetSelect() {
+    planetSel.innerHTML = Object.keys(PLANETS).map(function (p) {
+      return '<option value="' + p + '">' + PLANETS[p].ar + '</option>';
+    }).join('');
+    planetSel.value = state.planet;
+  }
+  async function loadPlanet(name) {
+    if (!PLANETS[name]) name = 'Prime';
+    const seq = ++loadSeq;
+    state.ready = false;
+    state.planet = name;
+    planetSel.value = name;
+    loadingEl.hidden = false;
+    loadingText.textContent = 'جارٍ تحميل ' + PLANETS[name].ar + '…';
+    hidePopup();
+    try {
+      const res = await fetch('data/' + PLANETS[name].file + '.json', { cache: 'no-cache' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      const data = await res.json();
+      if (seq !== loadSeq) return;
+      state.data = data;
+      state.cfg = {
+        planet: name,
+        extent: data.extent,
+        origin: [data.extent[0], data.extent[1]],
+        resolutions: data.resolutions,
+        barren: data.barren,
+        lush: data.lush
+      };
+      state.counts = {};
+      Object.keys(data.counts || {}).forEach(k => { state.counts[k] = data.counts[k]; });
+      state.counts.landing = (data.landings || []).length;
+      state.items = buildItems(data);
+      state.byId = new Map();
+      state.items.forEach(it => state.byId.set(it.id, it));
+
+      const barrenSrc = makeTileSource(state.cfg, 'barren');
+      const lushSrc = makeTileSource(state.cfg, 'lush');
+      watchTileSource(barrenSrc);
+      watchTileSource(lushSrc);
+      barrenLayer.setSource(barrenSrc);
+      lushLayer.setSource(lushSrc);
+      barrenLayer.setVisible(!state.lush);
+      lushLayer.setVisible(state.lush);
+
+      const view = new ol.View({
+        projection: PIXEL_PROJECTION,
+        center: [(data.extent[0] + data.extent[2]) / 2, (data.extent[1] + data.extent[3]) / 2],
+        resolutions: data.resolutions.slice()
+      });
+      map.setView(view);
+      const mapSize = map.getSize();
+      if (mapSize && mapSize[0] && mapSize[1]) {
+        const coverRes = Math.min(
+          (data.extent[2] - data.extent[0]) / mapSize[0],
+          (data.extent[3] - data.extent[1]) / mapSize[1]
+        );
+        const minRes = data.resolutions[data.resolutions.length - 1];
+        const maxRes = data.resolutions[0];
+        view.setCenter([(data.extent[0] + data.extent[2]) / 2, (data.extent[1] + data.extent[3]) / 2]);
+        view.setResolution(Math.max(minRes, Math.min(maxRes, coverRes)));
+      } else {
+        view.fit(data.extent, { padding: [26, 26, 26, 26] });
+      }
+
+      state.source = new ol.source.Vector({ features: state.items.map(toFeature) });
+      poiLayer.setSource(state.source);
+      meSource.clear();
+      ensureFound(name);
+      ensurePins(name);
+      refreshPinSource();
+      hidePopup();
+      searchEl.value = '';
+      searchResults.hidden = true;
+
+      renderCats();
+      renderProgress();
+      renderPins();
+      savePrefs();
+      loadingEl.hidden = true;
+      state.ready = true;
+    } catch (err) {
+      if (seq !== loadSeq) return;
+      loadingText.innerHTML = 'تعذّر تحميل بيانات ' + esc(PLANETS[name].ar) + '.<br>تحقق من الاتصال ثم أعد المحاولة.<br><button id="btnReload" class="mini" style="margin-top:10px">إعادة المحاولة</button>';
+      const b = $('btnReload');
+      if (b) b.onclick = function () { loadPlanet(name); };
+      toast('تعذّر تحميل بيانات الكوكب', 'warn');
+    }
+  }
+  function toFeature(it) {
+    const f = new ol.Feature({
+      geometry: new ol.geom.Point([it.x, it.z]),
+      gid: it.id,
+      cat: it.cat,
+      grp: it.grp,
+      label: it.label
+    });
+    f.setId(state.planet + ':' + it.id);
+    return f;
+  }
+
+  /* ================= العرض الجانبي ================= */
+  function foundByCat() {
+    const set = ensureFound(state.planet), out = {};
+    for (const it of state.items) {
+      if (set.has(it.id)) out[it.cat] = (out[it.cat] || 0) + 1;
+    }
+    return out;
+  }
+  function renderCats() {
+    const fc = foundByCat();
+    catsEl.innerHTML = CAT_ORDER.filter(cat => (state.counts[cat] || 0) > 0).map(function (cat) {
+      const on = !state.hidden.has(cat);
+      const total = state.counts[cat] || 0;
+      const count = TRACK.indexOf(cat) >= 0 ? (fc[cat] || 0) + '/' + total : String(total);
+      return '<label class="catrow' + (on ? '' : ' off') + '">' +
+        '<input type="checkbox" data-cat="' + cat + '"' + (on ? ' checked' : '') + '>' +
+        '<span class="dot" style="--c:' + CATS[cat].color + '"></span>' +
+        '<span class="catname">' + esc(CATS[cat].ar) + '</span>' +
+        '<span class="catcount num">' + count + '</span>' +
+        '</label>';
+    }).join('');
+  }
+  function renderProgress() {
+    const fc = foundByCat();
+    let total = 0, got = 0;
+    const rows = [];
+    for (const cat of TRACK) {
+      const t = state.counts[cat] || 0;
+      if (!t) continue;
+      const f = fc[cat] || 0;
+      total += t; got += f;
+      rows.push('<div class="progcat"><span class="dot" style="--c:' + CATS[cat].color + '"></span>' +
+        '<span>' + esc(CATS[cat].ar) + '</span><b class="num" dir="ltr">' + f + ' / ' + t + '</b></div>');
+    }
+    progText.textContent = got + ' / ' + total;
+    progBar.style.width = total ? Math.round(got * 100 / total) + '%' : '0%';
+    progCats.innerHTML = rows.join('');
+  }
+  function renderPins() {
+    const pins = ensurePins(state.planet);
+    pinsCount.textContent = pins.length + ' دبوس';
+    if (!pins.length) {
+      pinListEl.innerHTML = '<div class="empty">لا دبابيس في هذا الكوكب بعد</div>';
+      return;
+    }
+    pinListEl.innerHTML = pins.map(function (p) {
+      return '<div class="pinrow" data-id="' + esc(p.id) + '">' +
+        '<span class="pin-dot"></span>' +
+        '<div class="pin-info"><b>' + esc(p.name || 'دبوس') + '</b>' +
+        '<small>X ' + fmt(p.x) + ' · Z ' + fmt(p.z) + (p.note ? ' · ' + esc(p.note) : '') + '</small></div>' +
+        '<button class="mini" data-act="edit">تعديل</button>' +
+        '<button class="mini" data-act="del">حذف</button>' +
+        '</div>';
+    }).join('');
+  }
+  function refreshPinSource() {
+    const pins = ensurePins(state.planet);
+    const features = pins.map(function (p) {
+      const f = new ol.Feature({
+        geometry: new ol.geom.Point([p.x, p.z]),
+        kind: 'pin',
+        pinid: p.id,
+        label: p.name || 'دبوس'
+      });
+      f.setId('pin:' + state.planet + ':' + p.id);
+      return f;
+    });
+    pinLayer.setSource(new ol.source.Vector({ features }));
+    pinLayer.setVisible(state.showPins);
+    const b = $('btnPinsToggle');
+    b.textContent = state.showPins ? 'إخفاء' : 'إظهار';
+    b.setAttribute('aria-pressed', state.showPins ? 'true' : 'false');
+  }
+
+  /* ================= البحث ================= */
+  function hideSearchResults() {
+    searchResults.hidden = true;
+    searchResults.innerHTML = '';
+  }
+  function renderSearchResults() {
+    const q = normAr(searchEl.value);
+    if (!q) { hideSearchResults(); return; }
+    const out = [];
+    for (const it of state.items) {
+      if (it._s.indexOf(q) >= 0) {
+        out.push({ kind: 'poi', it });
+        if (out.length >= 26) break;
+      }
+    }
+    const pins = ensurePins(state.planet);
+    for (const p of pins) {
+      if (normAr((p.name || '') + ' ' + (p.note || '')).indexOf(q) >= 0) out.push({ kind: 'pin', p });
+    }
+    if (!out.length) {
+      searchResults.hidden = false;
+      searchResults.innerHTML = '<div class="empty">لا نتائج مطابقة</div>';
+      return;
+    }
+    searchResults.hidden = false;
+    searchResults.innerHTML = out.slice(0, 30).map(function (o) {
+      if (o.kind === 'pin') {
+        return '<button class="res" data-kind="pin" data-id="' + esc(o.p.id) + '">' +
+          '<span class="pin-dot"></span><span class="resmain"><b>' + esc(o.p.name || 'دبوس') + '</b>' +
+          '<small>دبوسي · X ' + fmt(o.p.x) + ' · Z ' + fmt(o.p.z) + '</small></span></button>';
+      }
+      const it = o.it;
+      return '<button class="res" data-kind="poi" data-id="' + esc(it.id) + '">' +
+        '<span class="dot" style="--c:' + CATS[it.cat].color + '"></span>' +
+        '<span class="resmain"><b>' + esc(it.label) + '</b>' +
+        '<small>' + esc(CATS[it.cat].ar) + ' · X ' + fmt(it.x) + ' · Z ' + fmt(it.z) + '</small></span>' +
+        '</button>';
+    }).join('');
+  }
+
+  /* ================= التركيز على موقع ================= */
+  function enableCat(cat) {
+    if (!state.hidden.has(cat)) return;
+    state.hidden.delete(cat);
+    savePrefs();
+    renderCats();
+    poiLayer.changed();
+  }
+  function focusItem(it) {
+    if (!it) return;
+    enableCat(it.cat);
+    const view = map.getView();
+    const cur = view.getResolution() || 2;
+    closeDrawer();
+    view.animate({ center: [it.x, it.z], resolution: Math.min(cur, 1.6), duration: 260 });
+    const planet = state.planet;
+    setTimeout(function () {
+      if (state.planet !== planet) return;
+      const f = state.source && state.source.getFeatureById(planet + ':' + it.id);
+      if (f) showPopup(f);
+    }, 300);
+  }
+  function focusPin(pin) {
+    if (!pin) return;
+    const view = map.getView();
+    const cur = view.getResolution() || 1.2;
+    closeDrawer();
+    view.animate({ center: [pin.x, pin.z], resolution: Math.min(cur, 1.2), duration: 260 });
+  }
+
+  /* ================= فقاعة الموقع ================= */
+  function showPopup(feature) {
+    const it = state.byId.get(feature.get('gid'));
+    if (!it) return;
+    state.popupItem = it;
+    state.selectedId = it.id;
+    const found = TRACK.indexOf(it.cat) >= 0 && ensureFound(state.planet).has(it.id);
+    const cat = CATS[it.cat] || { ar: it.cat, color: '#9bb7c8' };
+    const group = it.cat === 'landing' ? 'موقع هبوط' : (GA[it.grp] || it.grp);
+    popupEl.innerHTML = '<div class="pp">' +
+      '<div class="pp-top"><span class="dot" style="--c:' + cat.color + '"></span>' +
+      '<div class="pp-title"><b>' + esc(it.label) + '</b><small>' + esc(cat.ar) + ' · ' + esc(group) + '</small></div>' +
+      '<button class="xbtn" data-act="close" aria-label="إغلاق">×</button></div>' +
+      '<div class="pp-coords num">X ' + fmt(it.x) + ' &nbsp;·&nbsp; Z ' + fmt(it.z) + '</div>' +
+      (TRACK.indexOf(it.cat) >= 0
+        ? '<div class="pp-state ' + (found ? 'on' : 'off') + '">' + (found ? 'مسجّل كمُجمَّع' : 'غير مُجمَّع') + '</div>'
+        : '') +
+      '<div class="pp-btns">' +
+      (TRACK.indexOf(it.cat) >= 0
+        ? '<button class="pp-btn ' + (found ? 'done' : '') + '" data-act="toggle">' + (found ? '↺ تراجع عن التسجيل' : '✓ تم التجميع') + '</button>'
+        : '') +
+      '<button class="pp-btn ghost" data-act="pin">دبوس هنا</button>' +
+      '</div></div>';
+    popupEl.hidden = false;
+    popupOverlay.setPosition(feature.getGeometry().getCoordinates());
+    ensurePopupVisible();
+    poiLayer.changed();
+  }
+  function ensurePopupVisible() {
+    if (popupEl.hidden) return;
+    const size = map.getSize();
+    const pos = popupOverlay.getPosition();
+    if (!size || !pos) return;
+    const p = map.getPixelFromCoordinate(pos);
+    if (!p) return;
+    const w = popupEl.offsetWidth || 240;
+    const h = popupEl.offsetHeight || 140;
+    const m = 10;
+    const left = p[0] - w / 2;
+    const right = p[0] + w / 2;
+    const bottom = p[1] - 12;
+    const top = bottom - h;
+    let panX = 0, panY = 0;
+    if (left < m) panX = left - m;
+    else if (right > size[0] - m) panX = right - (size[0] - m);
+    if (top < m) panY = top - m;
+    else if (bottom > size[1] - m) panY = bottom - (size[1] - m);
+    if (panX || panY) {
+      const c = map.getCoordinateFromPixel([size[0] / 2 + panX, size[1] / 2 + panY]);
+      map.getView().setCenter(c);
+    }
+  }
+  function hidePopup() {
+    popupEl.hidden = true;
+    popupEl.innerHTML = '';
+    popupOverlay.setPosition(undefined);
+    state.popupItem = null;
+    state.selectedId = null;
+    poiLayer.changed();
+  }
+  function toggleFound(id) {
+    const set = ensureFound(state.planet);
+    const now = !set.has(id);
+    if (now) set.add(id); else set.delete(id);
+    saveFound(state.planet);
+    renderProgress();
+    renderCats();
+    const f = state.source && state.source.getFeatureById(state.planet + ':' + id);
+    if (f) showPopup(f); else hidePopup();
+    toast(now ? 'سُجّل الموقع كمُجمَّع' : 'أُزيل تسجيل الموقع');
+  }
+
+  /* ================= الدبابيس ================= */
+  function openPinDialog(x, z, pin) {
+    state.editingPin = pin || null;
+    pinTitle.textContent = pin ? 'تعديل الدبوس' : 'دبوس جديد';
+    pinName.value = pin ? (pin.name || '') : '';
+    pinNote.value = pin ? (pin.note || '') : '';
+    pinX.value = pin ? inputNum(pin.x) : inputNum(x);
+    pinZ.value = pin ? inputNum(pin.z) : inputNum(z);
+    pinDel.hidden = !pin;
+    if (pinDlg.open) pinDlg.close();
+    pinDlg.showModal();
+    setTimeout(function () { pinName.focus(); }, 40);
+  }
+  function startPinMode() {
+    if (state.pinMode) { stopPinMode(); return; }
+    state.pinMode = true;
+    appwrap.classList.add('pinmode');
+    closeDrawer();
+    toast('اضغط على الموقع المطلوب في الخريطة لوضع الدبوس');
+  }
+  function stopPinMode() {
+    state.pinMode = false;
+    appwrap.classList.remove('pinmode');
+  }
+  function savePinFromDialog() {
+    const name = pinName.value.trim() || 'دبوس';
+    const note = pinNote.value.trim();
+    const x = parseFloat(pinX.value);
+    const z = parseFloat(pinZ.value);
+    if (!isFinite(x) || !isFinite(z)) { toast('أدخل إحداثيات صحيحة', 'warn'); return; }
+    const pins = ensurePins(state.planet);
+    if (state.editingPin) {
+      const p = pins.find(v => v.id === state.editingPin.id);
+      if (p) { p.name = name; p.note = note; p.x = x; p.z = z; }
+    } else {
+      pins.push({ id: 'p' + Date.now().toString(36) + Math.floor(Math.random() * 90 + 10), name, note, x, z });
+    }
+    savePins(state.planet);
+    refreshPinSource();
+    renderPins();
+    pinDlg.close();
+    focusPin({ x, z });
+    toast('حُفظ الدبوس');
+  }
+  function deleteEditingPin() {
+    if (!state.editingPin) return;
+    if (!confirm('حذف الدبوس «' + (state.editingPin.name || 'دبوس') + '»؟')) return;
+    const pins = ensurePins(state.planet);
+    const i = pins.findIndex(v => v.id === state.editingPin.id);
+    if (i >= 0) pins.splice(i, 1);
+    savePins(state.planet);
+    refreshPinSource();
+    renderPins();
+    pinDlg.close();
+    toast('حُذف الدبوس');
+  }
+
+  /* ================= أقرب المواقع ================= */
+  function openNear() {
+    nearX.value = state.lastNear ? inputNum(state.lastNear[0]) : inputNum(map.getView().getCenter()[0]);
+    nearZ.value = state.lastNear ? inputNum(state.lastNear[1]) : inputNum(map.getView().getCenter()[1]);
+    nearResults.innerHTML = '';
+    if (!nearDlg.open) nearDlg.showModal();
+  }
+  function computeNear() {
+    const x = parseFloat(nearX.value), z = parseFloat(nearZ.value);
+    if (!isFinite(x) || !isFinite(z)) { toast('أدخل إحداثيات X و Z', 'warn'); return; }
+    state.lastNear = [x, z];
+    savePrefs();
+    const view = map.getView();
+    view.animate({ center: [x, z], resolution: Math.min(view.getResolution() || 2, 1.6), duration: 260 });
+    meSource.clear();
+    meSource.addFeature(new ol.Feature({ geometry: new ol.geom.Point([x, z]) }));
+    const arr = state.items
+      .filter(it => it.cat !== 'ore')
+      .map(it => ({ it, d: Math.hypot(it.x - x, it.z - z) }))
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 20);
+    nearResults.innerHTML = arr.map(function (row) {
+      const it = row.it;
+      return '<button class="res" data-id="' + esc(it.id) + '">' +
+        '<span class="dot" style="--c:' + CATS[it.cat].color + '"></span>' +
+        '<span class="resmain"><b>' + esc(it.label) + '</b>' +
+        '<small>' + esc(CATS[it.cat].ar) + ' · X ' + fmt(it.x) + ' · Z ' + fmt(it.z) + '</small></span>' +
+        '<span class="resgo num" dir="ltr">' + Math.round(row.d) + ' م</span></button>';
+    }).join('') || '<div class="empty">لا مواقع ضمن البيانات</div>';
+  }
+
+  /* ================= التصدير والاستيراد ================= */
+  function exportData() {
+    const found = {}, pins = {};
+    for (const p of Object.keys(PLANETS)) {
+      ensureFound(p); ensurePins(p);
+      found[p] = [...state.found[p]];
+      pins[p] = state.pins[p];
+    }
+    const blob = new Blob([JSON.stringify({ app: 'pcmap', version: 2, exported: new Date().toISOString(), found, pins }, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'pcmap-backup-' + new Date().toISOString().slice(0, 10) + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); a.remove(); }, 500);
+    toast('نُزّلت نسخة من بياناتك');
+  }
+  async function importData(file) {
+    try {
+      const obj = JSON.parse(await file.text());
+      let nf = 0, np = 0;
+      if (obj && obj.found && typeof obj.found === 'object') {
+        for (const p of Object.keys(obj.found)) {
+          if (!PLANETS[p] || !Array.isArray(obj.found[p])) continue;
+          const set = ensureFound(p);
+          for (const id of obj.found[p]) if (typeof id === 'string' && !set.has(id)) { set.add(id); nf++; }
+          saveFound(p);
         }
       }
-      save(); renderList(); needDraw = true;
-      toast('أضفت ' + n + ' نقطة');
-    } catch { toast('ملف غير صالح'); }
+      if (obj && obj.pins && typeof obj.pins === 'object') {
+        for (const p of Object.keys(obj.pins)) {
+          if (!PLANETS[p] || !Array.isArray(obj.pins[p])) continue;
+          const pins = ensurePins(p);
+          for (const pin of obj.pins[p]) {
+            if (!pin || !isFinite(pin.x) || !isFinite(pin.z)) continue;
+            if (pins.some(v => v.id === pin.id)) continue;
+            pins.push({
+              id: pin.id || ('p' + Date.now().toString(36) + Math.floor(Math.random() * 900 + 100)),
+              name: String(pin.name || 'دبوس').slice(0, 60),
+              note: String(pin.note || '').slice(0, 300),
+              x: +pin.x, z: +pin.z
+            });
+            np++;
+          }
+          savePins(p);
+        }
+      }
+      renderProgress(); renderCats(); refreshPinSource(); renderPins();
+      toast('استُوردت ' + nf + ' علامة و' + np + ' دبوس');
+    } catch (e) {
+      toast('ملف غير صالح', 'warn');
+    }
+  }
+
+  /* ================= نافذة فوق اللعبة ================= */
+  function openOverlay() {
+    const w = window.open(location.pathname + '?compact=1', 'pcmapOverlay', 'popup=yes,width=520,height=800');
+    if (!w) toast('اسمح بالنوافذ المنبثقة ثم أعد المحاولة', 'warn');
+  }
+  function copyStylesTo(win) {
+    document.querySelectorAll('link[rel="stylesheet"]').forEach(function (l) {
+      const c = win.document.createElement('link');
+      c.rel = 'stylesheet';
+      c.href = l.href;
+      win.document.head.appendChild(c);
+    });
+    document.querySelectorAll('style').forEach(function (s) {
+      const c = win.document.createElement('style');
+      c.textContent = s.textContent;
+      win.document.head.appendChild(c);
+    });
+  }
+  let pipWin = null;
+  async function enterPip() {
+    if (pipWin) return;
+    const dpip = window.documentPictureInPicture;
+    if (!dpip || !dpip.requestWindow) {
+      toast('التثبيت فوق النوافذ مدعوم في Chrome أو Edge على الحاسوب', 'warn');
+      return;
+    }
+    try {
+      const win = await dpip.requestWindow({
+        width: Math.max(380, Math.round((window.innerWidth || 500) * 0.5)),
+        height: Math.max(560, Math.round((window.innerHeight || 800) * 0.82))
+      });
+      pipWin = win;
+      copyStylesTo(win);
+      win.document.documentElement.lang = 'ar';
+      win.document.documentElement.dir = 'rtl';
+      win.document.documentElement.style.height = '100%';
+      win.document.body.style.margin = '0';
+      win.document.body.style.height = '100%';
+      win.document.body.style.background = '#06111a';
+      win.document.body.appendChild(appwrap);
+      const b = $('btnPip');
+      b.textContent = 'مثبتة فوق النوافذ';
+      b.disabled = true;
+      setTimeout(function () { map.updateSize(); }, 80);
+      win.addEventListener('resize', function () { map.updateSize(); });
+      win.addEventListener('pagehide', function () {
+        document.body.appendChild(appwrap);
+        pipWin = null;
+        const btn = $('btnPip');
+        btn.textContent = 'ثبّت فوق اللعبة';
+        btn.disabled = false;
+        setTimeout(function () { map.updateSize(); }, 80);
+      });
+      toast('النافذة مثبتة فوق النوافذ');
+    } catch (e) {
+      toast('تعذّر فتح نافذة التثبيت', 'warn');
+    }
+  }
+
+  /* ================= ربط الواجهة ================= */
+  function bindUI() {
+    if (isCompact) {
+      appwrap.classList.add('compact');
+      $('btnPip').hidden = false;
+    }
+
+    planetSel.addEventListener('change', function () {
+      loadPlanet(planetSel.value);
+    });
+    $('btnMenu').addEventListener('click', function () { appwrap.classList.toggle('sideOpen'); });
+    $('drawerBackdrop').addEventListener('click', function () { appwrap.classList.remove('sideOpen'); });
+
+    catsEl.addEventListener('change', function (e) {
+      const cb = e.target.closest('input[data-cat]');
+      if (!cb) return;
+      if (cb.checked) state.hidden.delete(cb.dataset.cat);
+      else state.hidden.add(cb.dataset.cat);
+      savePrefs();
+      renderCats();
+      poiLayer.changed();
+    });
+    $('btnAllCats').addEventListener('click', function () {
+      state.hidden.clear();
+      savePrefs();
+      renderCats();
+      poiLayer.changed();
+    });
+    $('onlyUndiscovered').addEventListener('change', function (e) {
+      state.onlyUndiscovered = e.target.checked;
+      savePrefs();
+      poiLayer.changed();
+    });
+    $('lushToggle').addEventListener('change', function (e) {
+      state.lush = e.target.checked;
+      barrenLayer.setVisible(!state.lush);
+      lushLayer.setVisible(state.lush);
+      savePrefs();
+    });
+    $('btnZoomIn').addEventListener('click', function () { map.getView().adjustZoom(1, { duration: 180 }); });
+    $('btnZoomOut').addEventListener('click', function () { map.getView().adjustZoom(-1, { duration: 180 }); });
+    $('btnFit').addEventListener('click', fitPlanet);
+
+    searchEl.addEventListener('input', renderSearchResults);
+    searchEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') {
+        const first = searchResults.querySelector('.res');
+        if (first) first.click();
+      }
+    });
+    searchResults.addEventListener('click', function (e) {
+      const btn = e.target.closest('.res');
+      if (!btn || !btn.dataset.id) return;
+      if (btn.dataset.kind === 'pin') {
+        const pin = ensurePins(state.planet).find(p => p.id === btn.dataset.id);
+        if (pin) { hideSearchResults(); focusPin(pin); openPinDialog(pin.x, pin.z, pin); }
+      } else {
+        const it = state.byId.get(btn.dataset.id);
+        if (it) { hideSearchResults(); focusItem(it); }
+      }
+    });
+
+    $('btnAddPin').addEventListener('click', startPinMode);
+    $('btnAddPinTop').addEventListener('click', startPinMode);
+    $('btnPinsToggle').addEventListener('click', function () {
+      state.showPins = !state.showPins;
+      pinLayer.setVisible(state.showPins);
+      savePrefs();
+      refreshPinSource();
+    });
+    pinListEl.addEventListener('click', function (e) {
+      const row = e.target.closest('.pinrow');
+      if (!row) return;
+      const pin = ensurePins(state.planet).find(p => p.id === row.dataset.id);
+      if (!pin) return;
+      const act = e.target.closest('[data-act]');
+      if (act && act.dataset.act === 'del') {
+        if (!confirm('حذف الدبوس «' + (pin.name || 'دبوس') + '»؟')) return;
+        const pins = ensurePins(state.planet);
+        const i = pins.findIndex(p => p.id === pin.id);
+        if (i >= 0) pins.splice(i, 1);
+        savePins(state.planet);
+        refreshPinSource();
+        renderPins();
+        toast('حُذف الدبوس');
+      } else if (act && act.dataset.act === 'edit') {
+        openPinDialog(pin.x, pin.z, pin);
+      } else {
+        focusPin(pin);
+        closeDrawer();
+      }
+    });
+
+    $('btnExport').addEventListener('click', exportData);
+    $('btnImport').addEventListener('click', function () { $('importFile').click(); });
+    $('importFile').addEventListener('change', function (e) {
+      const f = e.target.files && e.target.files[0];
+      if (f) importData(f);
+      e.target.value = '';
+    });
+
+    $('btnNear').addEventListener('click', function () { closeDrawer(); openNear(); });
+    $('btnNearest').addEventListener('click', openNear);
+    $('nearCloseX').addEventListener('click', function () { nearDlg.close(); });
+    $('nearGo').addEventListener('click', computeNear);
+    nearX.addEventListener('keydown', function (e) { if (e.key === 'Enter') computeNear(); });
+    nearZ.addEventListener('keydown', function (e) { if (e.key === 'Enter') computeNear(); });
+    nearResults.addEventListener('click', function (e) {
+      const btn = e.target.closest('.res[data-id]');
+      if (!btn) return;
+      const it = state.byId.get(btn.dataset.id);
+      nearDlg.close();
+      if (it) focusItem(it);
+    });
+
+    pinSave.addEventListener('click', savePinFromDialog);
+    pinCancel.addEventListener('click', function () { pinDlg.close(); });
+    $('pinCancelX').addEventListener('click', function () { pinDlg.close(); });
+    pinDel.addEventListener('click', deleteEditingPin);
+    pinDlg.addEventListener('click', function (e) {
+      if (e.target === pinDlg) pinDlg.close();
+    });
+    nearDlg.addEventListener('click', function (e) {
+      if (e.target === nearDlg) nearDlg.close();
+    });
+
+    popupEl.addEventListener('click', function (e) {
+      const btn = e.target.closest('[data-act]');
+      if (!btn) return;
+      const act = btn.dataset.act;
+      if (act === 'close') { hidePopup(); return; }
+      if (!state.popupItem) return;
+      if (act === 'toggle') { toggleFound(state.popupItem.id); return; }
+      if (act === 'pin') {
+        const it = state.popupItem;
+        hidePopup();
+        openPinDialog(it.x, it.z, null);
+      }
+    });
+
+    $('btnOverlay').addEventListener('click', openOverlay);
+    $('btnPip').addEventListener('click', enterPip);
+
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        if (state.pinMode) { stopPinMode(); toast('أُلغي وضع الدبوس'); return; }
+        if (!popupEl.hidden) { hidePopup(); return; }
+        appwrap.classList.remove('sideOpen');
+      }
+    });
+
+    let deferred = null;
+    window.addEventListener('beforeinstallprompt', function (e) {
+      e.preventDefault();
+      deferred = e;
+      const b = $('btnInstall');
+      b.hidden = false;
+      b.onclick = async function () {
+        if (!deferred) return;
+        deferred.prompt();
+        await deferred.userChoice;
+        deferred = null;
+        b.hidden = true;
+      };
+    });
+
+    /* أحداث الخريطة */
+    map.on('singleclick', function (evt) {
+      if (state.pinMode) {
+        stopPinMode();
+        openPinDialog(evt.coordinate[0], evt.coordinate[1], null);
+        return;
+      }
+      const feature = map.forEachFeatureAtPixel(evt.pixel, function (f) { return f; }, {
+        hitTolerance: 7,
+        layerFilter: function (l) { return l === poiLayer || l === pinLayer; }
+      });
+      if (!feature) { hidePopup(); return; }
+      if (feature.get('kind') === 'pin') {
+        const pin = ensurePins(state.planet).find(p => p.id === feature.get('pinid'));
+        if (pin) openPinDialog(pin.x, pin.z, pin);
+        return;
+      }
+      showPopup(feature);
+    });
+    map.on('pointermove', function (evt) {
+      if (evt.dragging) return;
+      let cursor = '';
+      if (state.pinMode) cursor = 'crosshair';
+      else if (map.hasFeatureAtPixel(evt.pixel, { hitTolerance: 5, layerFilter: function (l) { return l === poiLayer || l === pinLayer; } })) cursor = 'pointer';
+      const el = map.getTargetElement();
+      if (el && el.style.cursor !== cursor) el.style.cursor = cursor;
+    });
+  }
+
+  /* ================= الإقلاع ================= */
+  function applyPrefsToUI() {
+    $('onlyUndiscovered').checked = state.onlyUndiscovered;
+    $('lushToggle').checked = state.lush;
+    $('btnPinsToggle').textContent = state.showPins ? 'إخفاء' : 'إظهار';
+    $('btnPinsToggle').setAttribute('aria-pressed', state.showPins ? 'true' : 'false');
+  }
+
+  function boot() {
+    loadPrefs();
+    buildPlanetSelect();
+    bindUI();
+    applyPrefsToUI();
+    if (isCompact) {
+      appwrap.classList.add('compact');
+      $('btnPip').hidden = false;
+    }
+    loadPlanet(state.planet);
+  }
+
+  window.__pc = {
+    map: map,
+    state: state,
+    loadPlanet: loadPlanet,
+    openById: function (id) {
+      const f = state.source && state.source.getFeatureById(state.planet + ':' + id);
+      if (!f) return false;
+      const c = f.getGeometry().getCoordinates();
+      map.getView().setCenter(c);
+      const r = map.getView().getResolution();
+      if (!r || r > 1.6) map.getView().setResolution(1.6);
+      showPopup(f);
+      return true;
+    },
+    foundIds: function () { return [...ensureFound(state.planet)]; }
   };
-  r.readAsText(f);
-};
 
-// ---------- صورة الخريطة ----------
-async function loadImgRecord() {
-  const rec = await idbGet();
-  if (rec && rec.blob) await setMapImage(rec.blob, rec.name, false);
-  else $('#empty').style.display = '';
-}
-async function setMapImage(blob, name, persist) {
-  img = await blobToImg(blob);
-  iw = img.naturalWidth; ih = img.naturalHeight;
-  S.imgName = name || '';
-  if (persist) await idbPut({ blob, name: name || '', ts: Date.now() });
-  $('#empty').style.display = 'none';
-  fitView();
-  needDraw = true;
-}
-function blobToImg(blob) {
-  return new Promise((res, rej) => {
-    const i = new Image();
-    i.onload = () => res(i);
-    i.onerror = rej;
-    i.src = URL.createObjectURL(blob);
-  });
-}
-$('#btnImg').onclick = () => $('#mapFile').click();
-$('#btnEmptyImport').onclick = () => $('#mapFile').click();
-$('#mapFile').onchange = e => {
-  const f = e.target.files[0];
-  e.target.value = '';
-  if (f) takeImage(f);
-};
-function takeImage(f) {
-  if (!/^image\//.test(f.type)) { toast('اختر ملف صورة'); return; }
-  setMapImage(f, f.name, true).then(() => toast('خريطة: ' + (f.name || 'جديدة')));
-}
-document.addEventListener('dragover', e => e.preventDefault());
-document.addEventListener('drop', e => {
-  e.preventDefault();
-  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) takeImage(f);
-});
-
-// ---------- أدوات ----------
-$('#btnAdd').onclick = () => {
-  mode = mode === 'add' ? 'normal' : 'add';
-  $('#btnAdd').classList.toggle('on', mode === 'add');
-  if (mode === 'add') toast('اضغط الموقع لوضع دبوس');
-};
-$('#btnMeasure').onclick = () => {
-  mode = mode === 'measure' ? 'normal' : 'measure';
-  mPts = [];
-  $('#btnMeasure').classList.toggle('on', mode === 'measure');
-  needDraw = true;
-  if (mode === 'measure') toast('اختر نقطتين لقياس المسافة');
-};
-$('#btnCal').onclick = () => {
-  if (mode === 'cal') {
-    mode = 'normal'; $('#btnCal').classList.remove('on');
-    if (S.cal && !S.cal.done) { if (calBackup != null) S.cal = calBackup; else S.cal = null; calBackup = null; }
-    needDraw = true;
-    return;
-  }
-  calBackup = S.cal;
-  mode = 'cal';
-  $('#btnCal').classList.add('on');
-  if (calInfo()) {
-    openModal('calModal');
-    $('#calStep').textContent = 'المعايرة موجودة. لزيادة معايرة جديدة أعد الضغط على الخريطة أو استخدم زر إعادة الضبط.';
-  } else toast('اضغط أول نقطة على الخريطة');
-};
-$('#btnUndo').onclick = () => {
-  if (!S.pins.length) { toast('لا نقاط'); return; }
-  const last = S.pins[S.pins.length - 1];
-  S.pins.pop(); selId = null;
-  save(); renderList(); needDraw = true;
-  toast('حذفت: ' + last.name);
-};
-
-let tTimer = null, lastMX = null, lastMY = null;
-function toast(t) {
-  $('#status').textContent = t;
-  clearTimeout(tTimer);
-  tTimer = setTimeout(() => updStatus(), 2100);
-}
-function updStatus(sx, sy) {
-  if (sx == null) {
-    if (lastMX == null) { $('#status').textContent = ''; return; }
-    sx = lastMX; sy = lastMY;
-  }
-  lastMX = sx; lastMY = sy;
-  const mp = sToM(sx, sy);
-  const g = mapToGame(mp.x, mp.y);
-  $('#status').textContent = g ? `X ${fmtN(g.x)} · Z ${fmtN(g.z)}` : `${Math.round(mp.x)}, ${Math.round(mp.y)}`;
-}
-
-// ---------- التثبيت والخدمة ----------
-(function () {
-  let deferred = null;
-  const ib = $('#btnInstall');
-  const st = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
-  if (ib && st) ib.hidden = true;
-  window.addEventListener('beforeinstallprompt', e => { if (st) return; e.preventDefault(); deferred = e; ib.hidden = false; });
-  if (ib) ib.onclick = async () => { if (!deferred) return; deferred.prompt(); try { await deferred.userChoice; } catch {} deferred = null; ib.hidden = true; };
+  boot();
 })();
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
-
-// ---------- التشغيل ----------
-resize();
-renderList();
-loadImgRecord();
-requestAnimationFrame(loop);
